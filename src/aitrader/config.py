@@ -332,7 +332,7 @@ class Settings(BaseModel):
 
     secrets: Secrets
     strategy: StrategyConfig
-    repo_root: Path = REPO_ROOT
+    repo_root: Path = Field(default_factory=Path.cwd)
 
     @classmethod
     def load(cls, config_path: str | Path | None = None) -> Settings:
