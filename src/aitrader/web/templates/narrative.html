@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Narrative - AI Trader{% endblock %}
+{% block content %}
+<section class="card">
+  <h3>Today's plan</h3>
+  {% if plan %}
+  <div class="kv"><span>Bias</span><b>{{ plan.bias }}</b></div>
+  <div class="kv"><span>Posture</span><b>{{ plan.risk_posture }}</b></div>
+  <p>{{ plan.reasoning }}</p>
+  {% if plan.themes %}<p><b>Themes:</b> {{ plan.themes|join(", ") }}</p>{% endif %}
+  {% if plan.watchlist %}<p><b>Watchlist:</b> {{ plan.watchlist|join(", ") }}</p>{% endif %}
+  {% if plan.avoid %}<p><b>Avoiding:</b> {{ plan.avoid|join(", ") }}</p>{% endif %}
+  {% else %}
+  <p class="muted">No pre-market plan yet.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h3>Session log — the trader's notebook</h3>
+  <p class="muted">This is the running memory that carries across every decision cycle today.
+  It is what makes the system reason like one continuous trader rather than independent,
+  amnesiac calls every few minutes.</p>
+  <div class="log">
+    {% for e in entries %}
+    <div class="log-entry log-{{ e.role }}">
+      <span class="log-role">{{ e.role }}</span>
+      <span class="log-text">{{ e.content }}</span>
+    </div>
+    {% else %}
+    <p class="muted">Nothing logged yet.</p>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Overview - AI Trader{% endblock %}
+{% block content %}
+<section class="grid">
+  <div class="card">
+    <h3>Session</h3>
+    <div class="kv"><span>Phase</span><b id="phase">{{ snapshot.phase }}</b></div>
+    <div class="kv"><span>Status</span><b id="session-desc">{{ snapshot.session }}</b></div>
+    <div class="kv"><span>Halted</span><b id="halted">{{ snapshot.halted_reason or "no" }}</b></div>
+  </div>
+
+  <div class="card">
+    <h3>Account</h3>
+    <div class="kv"><span>ID</span><b id="acct-id">{{ snapshot.account.id }}</b></div>
+    <div class="kv"><span>Equity</span><b id="equity">${{ "%.2f"|format(snapshot.account.equity) }}</b></div>
+    <div class="kv"><span>Buying power</span><b id="bp">${{ "%.2f"|format(snapshot.account.buying_power) }}</b></div>
+    <div class="kv"><span>Day P&amp;L</span><b id="daypnl" class="{{ 'pos' if snapshot.pnl.day >= 0 else 'neg' }}">
+      {{ "%.2f"|format(snapshot.pnl.day) }} ({{ "%.2f"|format(snapshot.pnl.day_pct) }}%)</b></div>
+    <div class="kv"><span>Data age</span><b id="acct-age">{{ snapshot.account.age_seconds }}s</b></div>
+  </div>
+
+  <div class="card">
+    <h3>LLM</h3>
+    <div class="kv"><span>Strategy</span><b id="llm-strategy">{{ snapshot.llm.strategy }}</b></div>
+    <div class="kv"><span>Available</span><b id="llm-avail">{{ snapshot.llm.available }}</b></div>
+    <div class="kv"><span>Deterministic only</span><b id="llm-det">{{ snapshot.llm.deterministic_only }}</b></div>
+    <div class="kv"><span>Total calls</span><b id="llm-calls">{{ snapshot.llm.total_calls }}</b></div>
+  </div>
+
+  <div class="card">
+    <h3>Connection</h3>
+    <div class="kv"><span>State</span><b id="gw-state">{{ snapshot.connection.state }}</b></div>
+    <div class="kv"><span>Needs 2FA</span><b id="gw-2fa">{{ snapshot.connection.needs_manual_2fa }}</b></div>
+    <div class="kv"><span>Reconnects</span><b id="gw-reconnects">{{ snapshot.connection.reconnect_attempts }}</b></div>
+  </div>
+</section>
+
+<section class="card">
+  <h3>Positions</h3>
+  <table id="positions-table">
+    <thead><tr><th>Symbol</th><th>Qty</th><th>Avg cost</th><th>Market</th><th>Unrealized</th></tr></thead>
+    <tbody>
+      {% for p in snapshot.positions %}
+      <tr>
+        <td>{{ p.symbol }}</td><td>{{ p.quantity }}</td><td>{{ p.avg_cost }}</td>
+        <td>{{ p.market_price }}</td>
+        <td class="{{ 'pos' if p.unrealized_pnl >= 0 else 'neg' }}">{{ p.unrealized_pnl }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="muted">No open positions</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h3>Recent cycles</h3>
+  <table id="cycles-table">
+    <thead><tr><th>Cycle</th><th>Time</th><th>Focus</th><th>Proposals</th><th>Approved</th><th>Rejected</th><th>LLM ms</th></tr></thead>
+    <tbody>
+      {% for c in snapshot.cycles|reverse %}
+      <tr>
+        <td>{{ c.cycle_id }}</td><td>{{ c.started_at }}</td><td>{{ c.focus|length }}</td>
+        <td>{{ c.proposals }}</td><td>{{ c.approved }}</td><td>{{ c.rejected }}</td><td>{{ c.llm_latency_ms }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="muted">No cycles yet</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
