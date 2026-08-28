@@ -106,8 +106,8 @@ llm:
 
 broker:
   host: ib-gateway                       # the docker-compose service name; use 127.0.0.1 outside Docker
-  paper_port: 4002
-  live_port: 4001
+  paper_port: 4004                       # ib-gateway's socat proxy publishes 4004 (paper) / 4003 (live); 4002/4001 are internal-only
+  live_port: 4003
   client_id: 11
   connect_timeout: 20
   reconnect_base_delay: 5

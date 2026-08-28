@@ -8,7 +8,7 @@ uv.lock
 
 .env
 secrets/*.txt
-data/
+/data/
 logs/
 
 .pytest_cache/

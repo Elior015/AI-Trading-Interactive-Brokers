@@ -35,7 +35,7 @@ services:
       - "4003"
       - "4004"
     healthcheck:
-      test: ["CMD-SHELL", "(echo > /dev/tcp/127.0.0.1/4004) 2>/dev/null || exit 1"]
+      test: ["CMD-SHELL", "bash -c '(echo > /dev/tcp/127.0.0.1/4004)' 2>/dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -57,6 +57,7 @@ services:
       - .env
     environment:
       TZ: America/New_York
+      AITRADER_CONFIG: /app/config/config.yaml
     volumes:
       - ./data:/app/data
       - ./config:/app/config:ro
