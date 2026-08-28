@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Universe - AI Trader{% endblock %}
+{% block content %}
+<section class="grid">
+  <div class="card">
+    <h3>Data budget</h3>
+    <div class="kv"><span>Market data lines</span><b>{{ status.lines_used }} / {{ status.lines_capacity }}</b></div>
+    <div class="kv"><span>Historical pacer utilization</span><b>{{ "%.0f"|format(status.historical_utilization * 100) }}%</b></div>
+    <div class="kv"><span>Universe size</span><b>{{ status.universe_size }}</b></div>
+    <div class="kv"><span>Backfill complete</span><b>{{ status.backfill_complete }}</b></div>
+    <div class="kv"><span>No subscription</span><b>{{ status.no_subscription|join(", ") or "none" }}</b></div>
+  </div>
+  <div class="card">
+    <h3>Focus list ({{ focus|length }})</h3>
+    <p>{{ focus|join(", ") }}</p>
+  </div>
+</section>
+
+<section class="card">
+  <h3>Feature table</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Sym</th><th>Px</th><th>Chg%</th><th>Gap%</th><th>RVol</th><th>ATR%</th>
+        <th>VWAP dist (ATR)</th><th>RSI</th><th>EMA trend</th><th>MACD hist</th><th>OR pos</th><th>Spread%</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for sym, row in features.items() %}
+      <tr class="{{ 'focus-row' if sym in focus else '' }}">
+        <td>{{ sym }}</td><td>{{ row["px"] }}</td><td>{{ row["chg%"] }}</td><td>{{ row["gap%"] }}</td>
+        <td>{{ row["rvol"] }}</td><td>{{ row["atr%"] }}</td><td>{{ row["vwap_d_atr"] }}</td>
+        <td>{{ row["rsi"] }}</td><td>{{ row["ema_trend"] }}</td><td>{{ row["macd_hist"] }}</td>
+        <td>{{ row["or_pos"] }}</td><td>{{ row["spread%"] }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="12" class="muted">No features computed yet</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h3>Scanner results</h3>
+  {% for code, symbols in scanner_hits.items() %}
+  <div class="kv"><span>{{ code }}</span><b>{{ symbols|join(", ") or "(none)" }}</b></div>
+  {% endfor %}
+</section>
+{% endblock %}

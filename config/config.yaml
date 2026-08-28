@@ -1,0 +1,133 @@
+# AI Trader strategy configuration.
+#
+# Nothing secret belongs here — credentials and the trading-mode/live-trading
+# locks live in .env (see .env.example). This file is safe to commit.
+#
+# Every numeric risk limit is clamped to an absolute ceiling in
+# src/aitrader/hard_limits.py at load time: this file can only make a limit
+# tighter than that ceiling, never looser. If a value here looks like it was
+# ignored, check the startup log for a "config_clamped_to_hard_limit" warning.
+
+risk:
+  # Fraction of equity risked on a single trade at full model conviction.
+  max_risk_per_trade_pct: 0.005          # 0.5%
+  min_risk_per_trade_pct: 0.0015         # 0.15%, used at minimum actionable conviction
+  max_position_notional_pct: 0.10        # a single position may not exceed 10% of equity
+  max_concurrent_positions: 5
+  max_new_entries_per_cycle: 2
+  daily_loss_limit_pct: 0.02             # halt for the day at -2%
+  max_trades_per_day: 40
+  max_orders_per_minute: 6               # runaway-loop circuit breaker
+  price_collar_pct: 0.02                 # reject a limit price more than 2% from mid
+  max_spread_pct: 0.005
+  min_avg_volume: 500000
+  min_price: 3.0
+  max_price: 2000.0
+  max_quote_age_seconds: 15.0
+  max_account_age_seconds: 120.0
+  max_decision_age_seconds: 120.0
+  buying_power_reserve_pct: 0.20
+  symbol_cooldown_seconds: 300
+  flip_flop_guard_seconds: 600
+  no_entry_minutes_before_close: 20
+  flatten_minutes_before_close: 10       # flat by default every day — see README
+  allow_shorts: false
+  require_risk_officer: true
+  kill_switch_action: halt_new_entries   # or: flatten_all
+
+universe:
+  symbols_file: config/universe.csv
+  focus_list_size: 20
+  churn_margin: 0.15
+  churn_persistence_cycles: 2
+  max_promotions_per_cycle: 4
+  scan_codes:
+    - TOP_PERC_GAIN
+    - TOP_PERC_LOSE
+    - MOST_ACTIVE
+    - HOT_BY_VOLUME
+  scan_rows_per_code: 50
+  scanner_min_price: 3.0
+  scanner_min_volume: 500000
+
+cadence:
+  decision_interval_seconds: 300         # 5 minutes
+  fast_loop_seconds: 5
+  account_sync_seconds: 30
+  scanner_refresh_seconds: 60
+  connection_check_seconds: 10
+  dashboard_push_seconds: 1
+  premarket_start_minutes_before_open: 150
+  opening_range_minutes: 15
+
+llm:
+  provider: ollama_cloud                # or: ollama_local
+  cloud_host: https://ollama.com
+  local_host: http://localhost:11434
+  max_concurrent_requests: 1             # match your Ollama Cloud tier: Free=1, Pro=3, Max=10
+  max_retries: 3
+  retry_base_delay: 2.0
+  keep_alive: 30m
+  cache_enabled: true
+  audit_enabled: true
+  narrative_max_chars: 6000
+
+  strategist:
+    model: gpt-oss:120b
+    temperature: 0.0
+    num_ctx: 32768
+    num_predict: 2048
+    seed: 42
+    timeout_seconds: 180
+
+  trader:
+    model: gpt-oss:120b
+    temperature: 0.0
+    num_ctx: 32768
+    num_predict: 2048
+    seed: 42
+    timeout_seconds: 180
+
+  risk_officer:
+    model: gpt-oss:120b
+    temperature: 0.0
+    num_ctx: 16384
+    num_predict: 768
+    seed: 42
+    timeout_seconds: 90
+
+  reviewer:
+    model: gpt-oss:120b
+    temperature: 0.0
+    num_ctx: 32768
+    num_predict: 2048
+    seed: 42
+    timeout_seconds: 180
+
+broker:
+  host: ib-gateway                       # the docker-compose service name; use 127.0.0.1 outside Docker
+  paper_port: 4002
+  live_port: 4001
+  client_id: 11
+  connect_timeout: 20
+  reconnect_base_delay: 5
+  reconnect_max_delay: 300
+  historical_request_period: 10.5        # ~1 request per period, well under 60/10min
+  historical_burst: 6
+  max_market_data_lines: 90              # IBKR default allowance is 100; leave headroom
+  order_timeout_seconds: 90
+  limit_offset_pct: 0.001
+  adopt_unknown_orders: true
+  max_messages_per_second: 45            # IBKR closes the socket above ~50/sec
+
+data:
+  directory: data
+  duckdb_file: data/bars.duckdb
+  backfill_days: 20
+  bar_size: "5 mins"
+  memory_bars: 500
+
+web:
+  host: 0.0.0.0
+  port: 8080
+  enabled: true

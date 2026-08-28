@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Trades - AI Trader{% endblock %}
+{% block content %}
+<section class="card">
+  <h3>Orders</h3>
+  <table>
+    <thead><tr><th>Ref</th><th>Symbol</th><th>Action</th><th>Qty</th><th>State</th><th>Limit</th><th>Stop</th><th>Target</th><th>Filled</th><th>Updated</th></tr></thead>
+    <tbody>
+      {% for o in orders %}
+      <tr>
+        <td class="mono">{{ o.order_ref }}</td><td>{{ o.symbol }}</td><td>{{ o.action }}</td>
+        <td>{{ o.quantity }}</td><td>{{ o.state.value }}</td>
+        <td>{{ o.limit_price or "-" }}</td><td>{{ o.stop_price or "-" }}</td><td>{{ o.target_price or "-" }}</td>
+        <td>{{ o.filled_quantity }}</td><td>{{ o.updated_at }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="10" class="muted">No orders yet</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h3>Fills</h3>
+  <table>
+    <thead><tr><th>Symbol</th><th>Action</th><th>Qty</th><th>Price</th><th>Commission</th><th>Time</th></tr></thead>
+    <tbody>
+      {% for f in fills %}
+      <tr>
+        <td>{{ f.symbol }}</td><td>{{ f.action }}</td><td>{{ f.quantity }}</td>
+        <td>{{ f.price }}</td><td>{{ f.commission }}</td><td>{{ f.ts }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted">No fills yet</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

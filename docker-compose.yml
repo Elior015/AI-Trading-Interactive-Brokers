@@ -1,0 +1,95 @@
+# docker compose up ib-gateway   -> bring up the broker connection first,
+#                                    approve the initial IB Key 2FA push
+# docker compose up -d            -> then start everything
+#
+# See README.md for the full setup and go-live checklist.
+
+name: aitrader
+
+services:
+  ib-gateway:
+    image: ghcr.io/gnzsnz/ib-gateway:stable
+    restart: unless-stopped
+    environment:
+      TWS_USERID: ${TWS_USERID}
+      TWS_PASSWORD_FILE: /run/secrets/tws_password
+      TRADING_MODE: ${TRADING_MODE:-paper}
+      READ_ONLY_API: "no"
+      # Outside US trading hours; does not require 2FA. See README for the
+      # weekly re-authentication that IBC cannot automate.
+      AUTO_RESTART_TIME: "11:59 PM"
+      TWOFA_TIMEOUT_ACTION: restart
+      RELOGIN_AFTER_TWOFA_TIMEOUT: "yes"
+      TIME_ZONE: America/New_York
+      JAVA_HEAP_SIZE: "4096"
+    secrets:
+      - tws_password
+    volumes:
+      - gateway_settings:/home/ibgateway/Jts
+    ports:
+      # VNC only, loopback-bound, for approving the interactive weekly 2FA.
+      - "127.0.0.1:5900:5900"
+    # Not published to the host — only the trader container reaches these,
+    # over the internal compose network.
+    expose:
+      - "4003"
+      - "4004"
+    healthcheck:
+      test: ["CMD-SHELL", "(echo > /dev/tcp/127.0.0.1/4004) 2>/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
+
+  trader:
+    build:
+      context: .
+      dockerfile: docker/trader.Dockerfile
+    restart: unless-stopped
+    init: true
+    # Room for the graceful-shutdown path to cancel working entries before
+    # the container is killed.
+    stop_grace_period: 60s
+    depends_on:
+      ib-gateway:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      TZ: America/New_York
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-m", "aitrader", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # Optional local fallback for the LLM layer. Enable with:
+  #   docker compose --profile local-llm up -d
+  # and set llm.provider: ollama_local in config/config.yaml.
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["local-llm"]
+    restart: unless-stopped
+    volumes:
+      - ollama_models:/root/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+
+volumes:
+  gateway_settings: {}
+  ollama_models: {}
+
+secrets:
+  tws_password:
+    file: ./secrets/tws_password.txt

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}AI Trader{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">AI Trader <span id="mode-badge" class="badge">--</span></div>
+    <nav>
+      <a href="/">Overview</a>
+      <a href="/narrative">Narrative</a>
+      <a href="/trades">Trades</a>
+      <a href="/rejections">Rejections</a>
+      <a href="/universe">Universe</a>
+    </nav>
+    <div class="killbox">
+      <span id="conn-dot" class="dot"></span>
+      <span id="conn-text">connecting...</span>
+      <button id="kill-btn" class="kill" onclick="killSwitch('halt_new_entries')">HALT</button>
+      <button id="flatten-btn" class="kill kill-flatten" onclick="killSwitch('flatten_all')">FLATTEN ALL</button>
+      <button id="reset-btn" class="reset" onclick="resetKill()" style="display:none">RESET</button>
+    </div>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <script src="/static/app.js"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>
