@@ -149,6 +149,18 @@ class MarketDataService:
             )
         return added
 
+    async def resubscribe(self, symbols: list[str]) -> list[str]:
+        """Re-issue subscriptions for `symbols` after a broker reconnect.
+
+        `subscribe()` alone would skip every symbol already in `subscribed`,
+        but a reconnect gets a fresh IBKR session that carries none of the
+        old subscriptions over. The line budget is left untouched — it still
+        reflects lines we intend to hold, and `MarketDataLineBudget.reserve`
+        is a no-op for a symbol it already counts.
+        """
+        self.subscribed.clear()
+        return await self.subscribe(symbols)
+
     async def unsubscribe(self, symbols: list[str]) -> None:
         for symbol in symbols:
             if symbol not in self.subscribed:
