@@ -3,6 +3,20 @@
 // bits that matter every second: connection health and the kill switch,
 // specifically the "last update" clock so a dead stream never looks alive.
 (function () {
+  const token = new URLSearchParams(location.search).get("token") || "";
+
+  // Every internal link loses ?token= on click since it's a plain href;
+  // carry it forward so navigating between pages doesn't re-prompt for it.
+  if (token) {
+    document.querySelectorAll('a[href^="/"]').forEach((a) => {
+      const url = new URL(a.href, location.href);
+      if (!url.searchParams.has("token")) {
+        url.searchParams.set("token", token);
+        a.href = url.toString();
+      }
+    });
+  }
+
   const connDot = document.getElementById("conn-dot");
   const connText = document.getElementById("conn-text");
   const modeBadge = document.getElementById("mode-badge");
@@ -77,7 +91,9 @@
 
   function connect() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(proto + "//" + location.host + "/ws/stream");
+    const ws = new WebSocket(
+      proto + "//" + location.host + "/ws/stream?token=" + encodeURIComponent(token)
+    );
     ws.onmessage = (ev) => {
       try {
         applySnapshot(JSON.parse(ev.data));
@@ -106,11 +122,18 @@
       (mode === "flatten_all" ? " and close every open position." : "."))) {
       return;
     }
-    await fetch("/control/kill?mode=" + encodeURIComponent(mode), { method: "POST" });
+    await fetch(
+      "/control/kill?mode=" + encodeURIComponent(mode) + "&token=" + encodeURIComponent(token),
+      { method: "POST" }
+    );
   };
 
   window.resetKill = async function () {
     if (!confirm("Reset the kill switch? Trading will resume on the next cycle.")) return;
-    await fetch("/control/reset", { method: "POST" });
+    await fetch("/control/reset?token=" + encodeURIComponent(token), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: true }),
+    });
   };
 })();
