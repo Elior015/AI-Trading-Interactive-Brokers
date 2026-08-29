@@ -15,13 +15,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import secrets as _secrets
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 
 from ..domain.enums import KillSwitchAction
 from ..logging_setup import get_logger
@@ -32,10 +34,39 @@ WEB_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(WEB_DIR / "templates"))
 
 
+class ResetRequest(BaseModel):
+    confirm: bool = False
+
+
 def create_app(engine: Any) -> FastAPI:
     """Build the FastAPI app bound to a running `TradingEngine`."""
     app = FastAPI(title="AI Trader", docs_url=None, redoc_url=None)
     app.state.engine = engine
+
+    # Bearer token gating everything except /health (the Docker healthcheck
+    # hits it with no auth header) and /static. A page load can't set a
+    # custom header, so the token is also accepted as ?token=... — visit
+    # once at http://host:port/?token=<the value printed at startup>.
+    dashboard_token = engine.settings.get_or_create_dashboard_token()
+    log.warning(
+        "dashboard_token_ready",
+        detail="append ?token=<value> to the dashboard URL, or send it as "
+        "'Authorization: Bearer <value>' — see secrets/dashboard_token.txt",
+    )
+
+    def _token_ok(supplied: str | None) -> bool:
+        return bool(supplied) and _secrets.compare_digest(supplied, dashboard_token)
+
+    def require_token(
+        request: Request, authorization: str | None = Header(default=None)
+    ) -> None:
+        supplied = request.query_params.get("token")
+        if not supplied and authorization and authorization.lower().startswith("bearer "):
+            supplied = authorization[7:].strip()
+        if not _token_ok(supplied):
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED, "missing or invalid dashboard token"
+            )
 
     static_dir = WEB_DIR / "static"
     static_dir.mkdir(parents=True, exist_ok=True)
@@ -51,11 +82,13 @@ def create_app(engine: Any) -> FastAPI:
     # pages
     # ------------------------------------------------------------------ #
 
-    @app.get("/", response_class=HTMLResponse)
+    @app.get("/", response_class=HTMLResponse, dependencies=[Depends(require_token)])
     async def overview(request: Request) -> HTMLResponse:
         return render("overview.html", request, snapshot=engine.snapshot())
 
-    @app.get("/narrative", response_class=HTMLResponse)
+    @app.get(
+        "/narrative", response_class=HTMLResponse, dependencies=[Depends(require_token)]
+    )
     async def narrative_page(request: Request) -> HTMLResponse:
         entries = [
             {"role": e.role, "content": e.content, "ts": e.render()}
@@ -68,7 +101,7 @@ def create_app(engine: Any) -> FastAPI:
             plan=engine.state.plan.model_dump(mode="json") if engine.state.plan else None,
         )
 
-    @app.get("/trades", response_class=HTMLResponse)
+    @app.get("/trades", response_class=HTMLResponse, dependencies=[Depends(require_token)])
     async def trades_page(request: Request) -> HTMLResponse:
         orders = sorted(
             engine.orders.orders.values(), key=lambda o: o.updated_at, reverse=True
@@ -76,13 +109,17 @@ def create_app(engine: Any) -> FastAPI:
         fills = list(reversed(engine.orders.fills[-200:]))
         return render("trades.html", request, orders=orders, fills=fills)
 
-    @app.get("/rejections", response_class=HTMLResponse)
+    @app.get(
+        "/rejections", response_class=HTMLResponse, dependencies=[Depends(require_token)]
+    )
     async def rejections_page(request: Request) -> HTMLResponse:
         rows = engine.store.load_rejections(limit=200) if engine.store else []
         counts = engine.store.rejection_counts() if engine.store else {}
         return render("rejections.html", request, rows=rows, counts=counts)
 
-    @app.get("/universe", response_class=HTMLResponse)
+    @app.get(
+        "/universe", response_class=HTMLResponse, dependencies=[Depends(require_token)]
+    )
     async def universe_page(request: Request) -> HTMLResponse:
         md = engine.market_data
         return render(
@@ -100,7 +137,7 @@ def create_app(engine: Any) -> FastAPI:
     # control endpoints — every one routes through the engine, never the broker
     # ------------------------------------------------------------------ #
 
-    @app.post("/control/kill")
+    @app.post("/control/kill", dependencies=[Depends(require_token)])
     async def kill(mode: str = "halt_new_entries", reason: str = "manual dashboard trip") -> JSONResponse:
         action = (
             KillSwitchAction.FLATTEN_ALL
@@ -111,8 +148,15 @@ def create_app(engine: Any) -> FastAPI:
         log.warning("dashboard_kill_triggered", mode=mode, reason=reason)
         return JSONResponse({"ok": True, "status": engine.kill_switch.status()})
 
-    @app.post("/control/reset")
-    async def reset_kill() -> JSONResponse:
+    @app.post("/control/reset", dependencies=[Depends(require_token)])
+    async def reset_kill(body: ResetRequest) -> JSONResponse:
+        # Un-tripping is the dangerous direction — it re-enables trading —
+        # so it takes an explicit confirmation, not just the token.
+        if not body.confirm:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                'POST {"confirm": true} to reset the kill switch',
+            )
         engine.kill_switch.reset()
         log.warning("dashboard_kill_reset")
         return JSONResponse({"ok": True})
@@ -133,7 +177,7 @@ def create_app(engine: Any) -> FastAPI:
             status_code=200 if healthy or engine.broker.is_connected else 503,
         )
 
-    @app.get("/api/state")
+    @app.get("/api/state", dependencies=[Depends(require_token)])
     async def api_state() -> JSONResponse:
         return JSONResponse(engine.snapshot())
 
@@ -143,6 +187,11 @@ def create_app(engine: Any) -> FastAPI:
 
     @app.websocket("/ws/stream")
     async def stream(ws: WebSocket) -> None:
+        # A WebSocket handshake can't carry a Depends() dependency the same
+        # way; check the token from the query string before accepting.
+        if not _token_ok(ws.query_params.get("token")):
+            await ws.close(code=4401)
+            return
         await ws.accept()
         try:
             while True:
