@@ -129,6 +129,18 @@ class IbAsyncBroker:
     def is_connected(self) -> bool:
         return self.ib.isConnected()
 
+    def clear_subscription_cache(self) -> None:
+        """Drop cached ticker/bar handles after a reconnect.
+
+        `self.ib` (and its wrapper) persist across a reconnect, but IBKR's
+        subscriptions do not — a fresh session starts with none. Without
+        this, subscribe_quote()/subscribe_bars() below see the symbol
+        already in _tickers/_bar_subs and return without re-issuing the
+        request, leaving every feed silently dead.
+        """
+        self._tickers.clear()
+        self._bar_subs.clear()
+
     async def is_authenticated(self) -> bool:
         """Prove the session actually works, rather than trusting the socket.
 
