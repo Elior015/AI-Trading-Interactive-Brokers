@@ -8,6 +8,7 @@ warning. Defaults everywhere are paper.
 from __future__ import annotations
 
 import os
+import secrets as _secrets
 from pathlib import Path
 from typing import Any
 
@@ -274,7 +275,10 @@ class DataConfig(BaseModel):
 
 
 class WebConfig(BaseModel):
-    host: str = "0.0.0.0"
+    #: Loopback by default. The dashboard's control endpoints have no other
+    #: network-level protection outside Docker's own port publish binding,
+    #: so a non-Docker run should not default to listening on every interface.
+    host: str = "127.0.0.1"
     port: int = 8080
     enabled: bool = True
 
@@ -414,6 +418,27 @@ class Settings(BaseModel):
     @property
     def state_file(self) -> Path:
         return self.data_dir / "state.json"
+
+    @property
+    def dashboard_token_file(self) -> Path:
+        return self.repo_root / "secrets" / "dashboard_token.txt"
+
+    def get_or_create_dashboard_token(self) -> str:
+        """Bearer token gating the dashboard's control and data endpoints.
+
+        Generated once and persisted under secrets/ (gitignored, same pattern
+        as tws_password.txt) rather than regenerated per process start, so an
+        operator's saved bookmark/script keeps working across restarts.
+        """
+        path = self.dashboard_token_file
+        if path.exists():
+            token = path.read_text(encoding="utf-8").strip()
+            if token:
+                return token
+        token = _secrets.token_urlsafe(32)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(token, encoding="utf-8")
+        return token
 
     @property
     def universe_file(self) -> Path:
