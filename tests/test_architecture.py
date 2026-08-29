@@ -20,7 +20,8 @@ ALLOWED_IB_ASYNC_FILE = SRC / "broker" / "ib_adapter.py"
 ALLOWED_ORDER_MANAGER_CALLERS = {
     SRC / "risk" / "engine.py",
     SRC / "engine" / "scheduler.py",  # flatten-on-kill-switch / EOD flatten paths
-    SRC / "engine" / "cycle.py",  # CLOSE proposals, which bypass sizing/risk on purpose
+    SRC / "engine" / "cycle.py",  # CLOSE proposals: bypass sizing on purpose, but still
+                                   # gated by RiskEngine.evaluate_close() first
     SRC / "broker" / "orders.py",  # the module itself
 }
 
