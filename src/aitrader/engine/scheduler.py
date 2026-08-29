@@ -455,6 +455,22 @@ class TradingEngine:
         log.info("reconnected_reconciling")
         await self._reconcile()
 
+        # IBKR does not carry market-data subscriptions across a new session,
+        # and MarketDataService/IbAsyncBroker both cache "already subscribed"
+        # state that survives the reconnect — without this, every feed goes
+        # silently dead while /health keeps reporting connected.
+        account = self.state.account
+        working = self.orders.working_symbols
+        positions = set(account.open_positions) if account is not None else set()
+        focus = set(self.focus_manager.current)
+        targets = sorted(focus | positions | working)
+        if targets:
+            self.broker.clear_subscription_cache()
+            resubscribed = await self.market_data.resubscribe(targets)
+            log.info(
+                "market_data_resubscribed", symbols=resubscribed, requested=len(targets)
+            )
+
     def _on_broker_error(self, code: int, message: str, kind: str) -> None:
         if kind == "PACING":
             self.market_data.pacer.register_violation()
