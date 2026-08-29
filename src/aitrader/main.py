@@ -194,16 +194,36 @@ async def _kill(settings, mode: str, reason: str) -> int:
 
 
 async def _healthcheck(settings) -> int:
-    """Used by the Docker healthcheck. Exits 0 only when the system looks alive."""
+    """Used by the Docker healthcheck. Exits 0 only when the system looks alive.
+
+    This runs as its own short-lived process (Docker execs it separately from
+    `run`), so it can't read the live engine's in-memory state directly — it
+    asks the dashboard's own `/health` endpoint, which can, and already
+    accounts for "not tradeable because it's a weekend" not being a failure.
+    """
     if settings.kill_file.exists():
         # A tripped kill switch is a deliberate state, not a failure — the
         # container should stay up so it can be inspected and reset.
         print("kill switch active")
         return 0
-    if not settings.state_file.exists() and not settings.duckdb_path.exists():
-        print("no state yet")
+    if not settings.strategy.web.enabled:
+        print("dashboard disabled, skipping health probe")
         return 0
-    return 0
+
+    import urllib.error
+    import urllib.request
+
+    url = f"http://127.0.0.1:{settings.strategy.web.port}/health"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as resp:  # noqa: S310 - fixed localhost URL
+            print(f"dashboard /health -> {resp.status}")
+            return 0 if resp.status == 200 else 1
+    except urllib.error.HTTPError as exc:
+        print(f"dashboard /health -> {exc.code}")
+        return 0 if exc.code == 200 else 1
+    except Exception as exc:  # noqa: BLE001 - unreachable dashboard means unhealthy
+        print(f"dashboard unreachable: {exc}")
+        return 1
 
 
 def build_parser() -> argparse.ArgumentParser:
