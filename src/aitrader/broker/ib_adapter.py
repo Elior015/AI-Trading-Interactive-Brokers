@@ -42,6 +42,22 @@ from .port import (
 
 log = get_logger(__name__)
 
+# Mirrors ib_async's own default tag list (ib.py: reqAccountSummaryAsync). Kept
+# local because we bypass that helper below — see _account_summary_once.
+_ACCOUNT_SUMMARY_TAGS = (
+    "AccountType,NetLiquidation,TotalCashValue,SettledCash,"
+    "AccruedCash,BuyingPower,EquityWithLoanValue,"
+    "PreviousDayEquityWithLoanValue,GrossPositionValue,RegTEquity,"
+    "RegTMargin,SMA,InitMarginReq,MaintMarginReq,AvailableFunds,"
+    "ExcessLiquidity,Cushion,FullInitMarginReq,FullMaintMarginReq,"
+    "FullAvailableFunds,FullExcessLiquidity,LookAheadNextChange,"
+    "LookAheadInitMarginReq,LookAheadMaintMarginReq,"
+    "LookAheadAvailableFunds,LookAheadExcessLiquidity,"
+    "HighestSeverity,DayTradesRemaining,DayTradesRemainingT+1,"
+    "DayTradesRemainingT+2,DayTradesRemainingT+3,"
+    "DayTradesRemainingT+4,Leverage,$LEDGER:ALL"
+)
+
 
 def _f(value: Any, default: float | None = None) -> float | None:
     """IBKR sends NaN and -1 as 'no value'. Normalize both to None."""
@@ -125,8 +141,7 @@ class IbAsyncBroker:
         try:
             if not self.ib.managedAccounts():
                 return False
-            async with asyncio.timeout(15):
-                summary = await self.ib.accountSummaryAsync(self._account)
+            summary = await self._account_summary_once()
             return bool(summary)
         except TimeoutError:
             log.warning("broker_auth_probe_timeout")
@@ -134,6 +149,33 @@ class IbAsyncBroker:
         except Exception as exc:  # noqa: BLE001
             log.warning("broker_auth_probe_failed", error=str(exc))
             return False
+
+    async def _account_summary_once(self, timeout: float = 15.0) -> list[Any]:
+        """Fetch account summary via a fresh, self-cancelling subscription.
+
+        `ib.accountSummaryAsync()` subscribes once and caches forever, with no
+        way to clean up if the caller times out mid-flight (a real risk here:
+        this runs on every watchdog tick during a connectivity blip). IBKR
+        allows only one active account-summary subscription per client, so an
+        orphaned one then makes every later request fail with error 322
+        ("Maximum number of account summary requests exceeded") until the
+        next full Gateway restart. Using our own reqId and cancelling it in
+        `finally`, on every path including timeout, means a blip can never
+        leak a subscription.
+        """
+        req_id = self.ib.client.getReqId()
+        future = self.ib.wrapper.startReq(req_id)
+        self.ib.client.reqAccountSummary(req_id, "All", _ACCOUNT_SUMMARY_TAGS)
+        try:
+            async with asyncio.timeout(timeout):
+                await future
+        finally:
+            self.ib.client.cancelAccountSummary(req_id)
+            self.ib.wrapper._futures.pop(req_id, None)
+            self.ib.wrapper._results.pop(req_id, None)
+        if self._account:
+            return [v for v in self.ib.wrapper.acctSummary.values() if v.account == self._account]
+        return list(self.ib.wrapper.acctSummary.values())
 
     # ------------------------------------------------------------------ #
     # events
@@ -411,7 +453,7 @@ class IbAsyncBroker:
     async def account_snapshot(self) -> AccountSnapshot:
         """Ground truth. Never inferred, always fetched."""
         await self._pacer.acquire(3)
-        summary = await self.ib.accountSummaryAsync(self._account)
+        summary = await self._account_summary_once()
         values: dict[str, float] = {}
         for row in summary:
             if row.currency in ("USD", "", "BASE"):
