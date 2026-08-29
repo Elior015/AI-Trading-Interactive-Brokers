@@ -125,6 +125,16 @@ class BrokerPort(Protocol):
     async def subscribe_bars(self, symbol: str) -> None: ...
     async def unsubscribe_bars(self, symbol: str) -> None: ...
 
+    def clear_subscription_cache(self) -> None:
+        """Drop any cached "already subscribed" state after a reconnect.
+
+        IBKR does not carry market-data subscriptions across a new session.
+        Without this, subscribe_quote()/subscribe_bars() would keep skipping
+        every symbol they believe is still subscribed, leaving feeds silently
+        dead after every reconnect.
+        """
+        ...
+
     async def historical_bars(
         self, symbol: str, duration: str, bar_size: str, what_to_show: str = "TRADES"
     ) -> list[Bar]:
