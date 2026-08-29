@@ -179,7 +179,7 @@ class DecisionCycle:
             # Exits are handled separately: they are not new risk, so they do
             # not pass through sizing or the entry limits.
             if proposal.action == Action.CLOSE:
-                await self._handle_close(proposal.symbol, account, record)
+                await self._handle_close(proposal.symbol, account, session, record)
                 continue
 
             features = self.state.features.get(proposal.symbol)
@@ -267,12 +267,23 @@ class DecisionCycle:
                 )
                 self.agents.narrative.record_rejection(sized.symbol, reason, verdict.detail)
 
-    async def _handle_close(self, symbol: str, account: Any, record: CycleRecord) -> None:
+    async def _handle_close(
+        self, symbol: str, account: Any, session: SessionInfo, record: CycleRecord
+    ) -> None:
         position = account.open_positions.get(symbol)
         if position is None:
             record.rejections.append(
                 {"symbol": symbol, "reason": "NO_POSITION", "detail": "nothing to close"}
             )
+            return
+
+        quote = self.market_data.quotes([symbol]).get(symbol)
+        verdict = self.risk.evaluate_close(symbol, quote, session.phase, self.orders.working_symbols)
+        if not verdict.approved:
+            record.rejected += 1
+            reason = verdict.reason.value if verdict.reason else "UNKNOWN"
+            record.rejections.append({"symbol": symbol, "reason": reason, "detail": verdict.detail})
+            self.agents.narrative.record_rejection(symbol, reason, verdict.detail)
             return
         try:
             await self.orders.close_position(
