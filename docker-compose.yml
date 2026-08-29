@@ -61,6 +61,10 @@ services:
     volumes:
       - ./data:/app/data
       - ./config:/app/config:ro
+      # Read-write: the dashboard token is generated and written here at
+      # runtime (secrets/dashboard_token.txt), unlike tws_password.txt which
+      # is read-only input via Docker's own `secrets:` mechanism below.
+      - ./secrets:/app/secrets
     ports:
       - "127.0.0.1:8080:8080"
     healthcheck:
