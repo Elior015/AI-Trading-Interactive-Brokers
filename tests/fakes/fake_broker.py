@@ -110,6 +110,9 @@ class FakeBroker:
     async def unsubscribe_bars(self, symbol: str) -> None:
         self.bars.pop(symbol, None)
 
+    def clear_subscription_cache(self) -> None:
+        pass
+
     async def historical_bars(
         self, symbol: str, duration: str = "2 D", bar_size: str = "5 mins",
         what_to_show: str = "TRADES",
