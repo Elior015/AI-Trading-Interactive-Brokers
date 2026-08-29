@@ -17,6 +17,7 @@ call and the acknowledgement produces a duplicate position.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -30,6 +31,12 @@ from .port import BrokerExecution, BrokerOrderSpec, BrokerOrderStatus, BrokerPor
 log = get_logger(__name__)
 
 REF_PREFIX = "ait"
+
+#: How long a symbol stays blocked after an unresolved submit error before it
+#: is auto-unblocked. `reconcile()` only runs on connect/reconnect, not on a
+#: timer, so a transient error on an otherwise-stable connection could
+#: otherwise leave a symbol frozen for the rest of the process's life.
+_BLOCK_TTL_SECONDS = 600.0
 
 #: IBKR status strings mapped to our state machine.
 _STATUS_MAP = {
@@ -112,9 +119,18 @@ class OrderManager:
         self.orders: dict[str, ManagedOrder] = {}
         self.fills: list[Fill] = []
         #: Symbols we must not trade until reconciliation resolves them.
-        self.blocked_symbols: set[str] = set()
+        #: Value is the monotonic time the block was set, so it can expire —
+        #: see _BLOCK_TTL_SECONDS.
+        self.blocked_symbols: dict[str, float] = {}
         self._seen_exec_ids: set[str] = set()
         self._perm_ids: dict[str, int] = {}
+
+    def _unblock_expired(self) -> None:
+        now = time.monotonic()
+        expired = [s for s, blocked_at in self.blocked_symbols.items() if now - blocked_at > _BLOCK_TTL_SECONDS]
+        for symbol in expired:
+            del self.blocked_symbols[symbol]
+            log.info("symbol_block_expired", symbol=symbol, ttl_seconds=_BLOCK_TTL_SECONDS)
 
     # ------------------------------------------------------------------ #
     # placement
@@ -122,6 +138,7 @@ class OrderManager:
 
     async def place_bracket(self, order: SizedOrder, cycle_id: str = "") -> list[ManagedOrder]:
         """Place a native bracket, persisting our intent first."""
+        self._unblock_expired()
         if order.symbol in self.blocked_symbols:
             raise RuntimeError(
                 f"{order.symbol} is blocked pending reconciliation of an unresolved order"
@@ -190,7 +207,7 @@ class OrderManager:
             # Leave the rows in place: they are the record that we *may* have
             # sent something, and reconciliation must check rather than assume.
             for mo in managed:
-                self.blocked_symbols.add(mo.symbol)
+                self.blocked_symbols[mo.symbol] = time.monotonic()
             raise
 
         for status in statuses:
@@ -356,6 +373,7 @@ class OrderManager:
         the failure that compounds worst.
         """
         report = ReconciliationReport()
+        self._unblock_expired()
 
         broker_open = await self.broker.open_orders()
         broker_completed = await self.broker.completed_orders()
@@ -420,7 +438,7 @@ class OrderManager:
                     report.protective_stops_placed.append(symbol)
                 else:
                     report.unresolved.append(f"{symbol}: unprotected, stop placement failed")
-                    self.blocked_symbols.add(symbol)
+                    self.blocked_symbols[symbol] = time.monotonic()
 
         # 5. Cancel protective orders for positions we no longer hold.
         for mo in list(self.orders.values()):
