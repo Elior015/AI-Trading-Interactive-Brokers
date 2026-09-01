@@ -30,8 +30,8 @@ from ..analytics.ranking import FocusListManager, scanner_rank_scores
 from ..broker.market_data import MarketDataService
 from ..broker.orders import OrderManager
 from ..config import Settings
-from ..domain.enums import Action
-from ..domain.proposals import CycleDecision
+from ..domain.enums import Action, ExecutionMode
+from ..domain.proposals import CycleDecision, PendingApproval
 from ..logging_setup import get_logger
 from ..risk.engine import RiskContext, RiskEngine
 from ..risk.sizing import size_proposal
@@ -179,7 +179,7 @@ class DecisionCycle:
             # Exits are handled separately: they are not new risk, so they do
             # not pass through sizing or the entry limits.
             if proposal.action == Action.CLOSE:
-                await self._handle_close(proposal.symbol, account, session, record)
+                await self._handle_close(proposal.symbol, account, session, record, cycle_id)
                 continue
 
             features = self.state.features.get(proposal.symbol)
@@ -249,6 +249,26 @@ class DecisionCycle:
                 avg_volume=features.avg_volume,
             )
 
+            if self.state.execution_mode == ExecutionMode.MANUAL:
+                self.state.pending_approvals.append(
+                    PendingApproval(
+                        cycle_id=cycle_id,
+                        kind="entry",
+                        symbol=sized.symbol,
+                        action=sized.action,
+                        rationale=proposal.rationale,
+                        evidence=proposal.evidence,
+                        sized=sized,
+                    )
+                )
+                record.pending += 1
+                self.agents.narrative.append(
+                    "awaiting_approval",
+                    f"{sized.action.value} {sized.quantity} {sized.symbol} at "
+                    f"{sized.entry_price:.2f} — waiting for your OK",
+                )
+                continue
+
             verdict = await self.risk.submit(sized, ctx, cycle_id=cycle_id)
             if verdict.approved:
                 record.approved += 1
@@ -268,7 +288,12 @@ class DecisionCycle:
                 self.agents.narrative.record_rejection(sized.symbol, reason, verdict.detail)
 
     async def _handle_close(
-        self, symbol: str, account: Any, session: SessionInfo, record: CycleRecord
+        self,
+        symbol: str,
+        account: Any,
+        session: SessionInfo,
+        record: CycleRecord,
+        cycle_id: str = "",
     ) -> None:
         position = account.open_positions.get(symbol)
         if position is None:
@@ -285,6 +310,23 @@ class DecisionCycle:
             record.rejections.append({"symbol": symbol, "reason": reason, "detail": verdict.detail})
             self.agents.narrative.record_rejection(symbol, reason, verdict.detail)
             return
+
+        if self.state.execution_mode == ExecutionMode.MANUAL:
+            self.state.pending_approvals.append(
+                PendingApproval(
+                    cycle_id=cycle_id,
+                    kind="close",
+                    symbol=symbol,
+                    action=Action.SELL if position.is_long else Action.BUY,
+                    rationale="model requested exit",
+                    close_quantity=position.quantity,
+                    close_is_long=position.is_long,
+                )
+            )
+            record.pending += 1
+            self.agents.narrative.append("awaiting_approval", f"Close {symbol} — waiting for your OK")
+            return
+
         try:
             await self.orders.close_position(
                 symbol, position.quantity, position.is_long, reason="model requested exit"
@@ -313,9 +355,27 @@ class DecisionCycle:
 
         candidates = self.market_data.scanner_universe()[:200]
         await self.market_data.load_cached(candidates)
-        await self.refresh_features(candidates)
 
         from ..analytics.ranking import rank_candidates
+
+        # Real intraday bars don't exist yet this early in the session, so
+        # `refresh_features` (which reads `market_data.intraday`) would return
+        # nothing for every symbol and leave the focus list permanently empty
+        # -- no symbol ever gets subscribed, so intraday bars never start
+        # accumulating either. Rank premarket candidates on daily bars instead
+        # (already loaded by backfill_universe); once a seed focus list is
+        # subscribed below, the first live cycle's refresh_features() takes
+        # over with real intraday data.
+        daily = {s: self.market_data.daily.get(s, []) for s in candidates}
+        quotes = self.market_data.quotes(candidates)
+        self.state.features = feat.build_all(
+            intraday=daily,
+            daily=daily,
+            quotes=quotes,
+            opening_range_bars=max(
+                1, self.settings.strategy.cadence.opening_range_minutes // 5
+            ),
+        )
 
         ranked = rank_candidates(
             self.state.features,

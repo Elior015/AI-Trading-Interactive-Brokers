@@ -24,7 +24,6 @@ from ib_async import (
     ScannerSubscription,
     Stock,
     StopOrder,
-    TagValue,
 )
 
 from ..data.ratelimit import TokenBucket
@@ -86,6 +85,20 @@ class IbAsyncBroker:
         self._bar_subs: dict[str, Any] = {}
         self._account: str = ""
         self._ref_by_order_id: dict[int, str] = {}
+        # Serializes account-summary requests: the watchdog (every 10s) and
+        # account-sync (every 30s) loops both call into
+        # `_account_summary_once` independently, and IBKR allows only one
+        # open account-summary subscription per client — two in flight at
+        # once fails every later request with error 322 until the next
+        # Gateway restart. See `_account_summary_once`.
+        self._account_summary_lock = asyncio.Lock()
+        # IBKR reuses error 162 for genuine historical-data pacing violations
+        # *and* for unrelated scanner rejections (disabled filter, entitlement
+        # cancellation). `_on_error` treats every 162 as PACING and throttles
+        # the shared historical-data pacer, so a permanently broken scanner
+        # would otherwise punish real historical/quote requests forever. This
+        # tracks in-flight scanner reqIds so their errors can be excluded.
+        self._scanner_req_ids: set[int] = set()
         self._wire_events()
 
     # ------------------------------------------------------------------ #
@@ -175,19 +188,20 @@ class IbAsyncBroker:
         `finally`, on every path including timeout, means a blip can never
         leak a subscription.
         """
-        req_id = self.ib.client.getReqId()
-        future = self.ib.wrapper.startReq(req_id)
-        self.ib.client.reqAccountSummary(req_id, "All", _ACCOUNT_SUMMARY_TAGS)
-        try:
-            async with asyncio.timeout(timeout):
-                await future
-        finally:
-            self.ib.client.cancelAccountSummary(req_id)
-            self.ib.wrapper._futures.pop(req_id, None)
-            self.ib.wrapper._results.pop(req_id, None)
-        if self._account:
-            return [v for v in self.ib.wrapper.acctSummary.values() if v.account == self._account]
-        return list(self.ib.wrapper.acctSummary.values())
+        async with self._account_summary_lock:
+            req_id = self.ib.client.getReqId()
+            future = self.ib.wrapper.startReq(req_id)
+            self.ib.client.reqAccountSummary(req_id, "All", _ACCOUNT_SUMMARY_TAGS)
+            try:
+                async with asyncio.timeout(timeout):
+                    await future
+            finally:
+                self.ib.client.cancelAccountSummary(req_id)
+                self.ib.wrapper._futures.pop(req_id, None)
+                self.ib.wrapper._results.pop(req_id, None)
+            if self._account:
+                return [v for v in self.ib.wrapper.acctSummary.values() if v.account == self._account]
+            return list(self.ib.wrapper.acctSummary.values())
 
     # ------------------------------------------------------------------ #
     # events
@@ -239,6 +253,17 @@ class IbAsyncBroker:
 
     def _on_error(self, req_id: int, code: int, message: str, contract: Any = None) -> None:
         kind = classify_error(code)
+        if kind == "PACING" and (
+            req_id in self._scanner_req_ids or "scanner subscription cancelled" in message.lower()
+        ):
+            # IBKR overloads this code for scanner rejections unrelated to
+            # pacing, including its own async echo of the cancelScannerSubscription
+            # call `scan()` makes in its `finally` on every successful pass —
+            # by the time that echo arrives, the reqId has usually already been
+            # discarded from `_scanner_req_ids`, hence the message match too.
+            # Letting either through as PACING would throttle the shared
+            # historical-data pacer over routine, expected scanner noise.
+            kind = "BENIGN"
         if kind == "BENIGN":
             return
         self.stats.errors[str(code)] = self.stats.errors.get(str(code), 0) + 1
@@ -425,13 +450,26 @@ class IbAsyncBroker:
         return out
 
     async def scan(
-        self, scan_code: str, rows: int = 50, min_price: float = 3.0, min_volume: int = 500_000
+        self,
+        scan_code: str,
+        rows: int = 50,
+        min_price: float = 3.0,
+        min_volume: int = 500_000,
+        timeout: float = 15.0,
     ) -> list[ScannerHit]:
         """Server-side scanner.
 
         Scanner results carry no bid/ask/last fields, which is exactly why they
         cost no market-data lines — the reason a 100+ symbol universe is
         affordable at all.
+
+        Bypasses `ib.reqScannerDataAsync`: it only cancels the subscription
+        on the happy path (`await future` then `cancelScannerSubscription`),
+        so any rejection or slow response leaks a subscription with no
+        timeout on the wait. Leaked subscriptions stack up until IBKR starts
+        auto-cancelling new ones with "API scanner subscription cancelled"
+        (error 162) — this mirrors the self-cancelling pattern in
+        `_account_summary_once` to guarantee cleanup on every path.
         """
         await self._pacer.acquire()
         sub = ScannerSubscription(
@@ -442,12 +480,26 @@ class IbAsyncBroker:
             abovePrice=min_price,
             aboveVolume=min_volume,
         )
-        opts = [TagValue("usdMarketCapAbove", "100000000")]
+        # No TagValue filters: `usdMarketCapAbove` requires a fundamentals
+        # data entitlement this account doesn't have and IBKR rejects it
+        # with error 162 on every call, which kills scanning entirely.
+        # abovePrice/aboveVolume on the subscription already filter junk.
+        data_list = self.ib.reqScannerSubscription(sub, [], [])
+        self._scanner_req_ids.add(data_list.reqId)
+        future = self.ib.wrapper.startReq(data_list.reqId, container=data_list)
         try:
-            data = await self.ib.reqScannerDataAsync(sub, [], opts)
+            async with asyncio.timeout(timeout):
+                await future
+            data = future.result()
         except Exception as exc:  # noqa: BLE001
             log.warning("scanner_failed", scan_code=scan_code, error=str(exc))
             return []
+        finally:
+            self.ib.client.cancelScannerSubscription(data_list.reqId)
+            self.ib.wrapper.endSubscription(data_list)
+            self.ib.wrapper._futures.pop(data_list.reqId, None)
+            self.ib.wrapper._results.pop(data_list.reqId, None)
+            self._scanner_req_ids.discard(data_list.reqId)
         hits: list[ScannerHit] = []
         for item in data or []:
             contract = getattr(item.contractDetails, "contract", None) if item else None

@@ -25,7 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from ..domain.enums import KillSwitchAction
+from ..domain.enums import ExecutionMode, KillSwitchAction
 from ..logging_setup import get_logger
 
 log = get_logger(__name__)
@@ -36,6 +36,16 @@ TEMPLATES = Jinja2Templates(directory=str(WEB_DIR / "templates"))
 
 class ResetRequest(BaseModel):
     confirm: bool = False
+
+
+class ModeRequest(BaseModel):
+    mode: str  # "auto" or "manual"
+    confirm: bool = False
+
+
+class ApprovalRequest(BaseModel):
+    id: str
+    reason: str = ""
 
 
 def create_app(engine: Any) -> FastAPI:
@@ -159,6 +169,35 @@ def create_app(engine: Any) -> FastAPI:
             )
         engine.kill_switch.reset()
         log.warning("dashboard_kill_reset")
+        return JSONResponse({"ok": True})
+
+    @app.post("/control/mode", dependencies=[Depends(require_token)])
+    async def set_mode(body: ModeRequest) -> JSONResponse:
+        if body.mode not in ("auto", "manual"):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "mode must be 'auto' or 'manual'")
+        # Switching to auto removes the person from the loop going forward —
+        # same explicit-confirm bar as resetting the kill switch. Switching
+        # to manual (the safer direction) needs no confirmation.
+        if body.mode == "auto" and not body.confirm:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                'POST {"mode": "auto", "confirm": true} to let the AI trade by itself',
+            )
+        engine.set_execution_mode(ExecutionMode(body.mode))
+        log.warning("dashboard_mode_changed", mode=body.mode)
+        return JSONResponse({"ok": True, "execution_mode": body.mode})
+
+    @app.post("/control/approve", dependencies=[Depends(require_token)])
+    async def approve(body: ApprovalRequest) -> JSONResponse:
+        verdict = await engine.approve_proposal(body.id)
+        if verdict is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "that trade is no longer waiting")
+        return JSONResponse({"ok": True, "approved": verdict.approved, "detail": verdict.detail})
+
+    @app.post("/control/reject", dependencies=[Depends(require_token)])
+    async def reject(body: ApprovalRequest) -> JSONResponse:
+        if not engine.reject_proposal(body.id, body.reason):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "that trade is no longer waiting")
         return JSONResponse({"ok": True})
 
     # ------------------------------------------------------------------ #

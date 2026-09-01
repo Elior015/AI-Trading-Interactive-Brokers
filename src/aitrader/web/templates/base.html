@@ -16,6 +16,11 @@
       <a href="/rejections">Rejections</a>
       <a href="/universe">Universe</a>
     </nav>
+    <div class="modebox">
+      <span class="muted">Trading:</span>
+      <button id="mode-auto-btn" class="mode-btn" onclick="setMode('auto')">AI decides alone</button>
+      <button id="mode-manual-btn" class="mode-btn" onclick="setMode('manual')">I approve trades</button>
+    </div>
     <div class="killbox">
       <span id="conn-dot" class="dot"></span>
       <span id="conn-text">connecting...</span>

@@ -194,6 +194,9 @@ class CadenceConfig(BaseModel):
     #: Minutes before the open to start the pre-market backfill.
     premarket_start_minutes_before_open: int = Field(default=150, ge=10)
     opening_range_minutes: int = Field(default=15, ge=1, le=60)
+    #: In manual mode, how long a trade idea waits for a person to answer
+    #: before it's dropped as expired.
+    approval_timeout_seconds: float = Field(default=600.0, ge=60)
 
 
 class ModelSpec(BaseModel):

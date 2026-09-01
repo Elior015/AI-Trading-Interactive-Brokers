@@ -78,11 +78,19 @@ class RejectReason(str, Enum):
     NO_MARKET_DATA = "NO_MARKET_DATA"
     RISK_OFFICER_VETO = "RISK_OFFICER_VETO"
     UNKNOWN_SYMBOL = "UNKNOWN_SYMBOL"
+    APPROVAL_EXPIRED = "APPROVAL_EXPIRED"
 
 
 class TradingMode(str, Enum):
     PAPER = "paper"
     LIVE = "live"
+
+
+class ExecutionMode(str, Enum):
+    """Who pulls the trigger on a sized, risk-vetted trade idea."""
+
+    AUTO = "auto"      # the AI places the order itself
+    MANUAL = "manual"  # a person must approve it first
 
 
 class KillSwitchAction(str, Enum):

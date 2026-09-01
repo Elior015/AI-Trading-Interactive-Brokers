@@ -9,6 +9,7 @@ hallucinated trade.
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from typing import Literal
 
@@ -200,3 +201,36 @@ class RiskVerdict(BaseModel):
 
     def __bool__(self) -> bool:
         return self.approved
+
+
+class PendingApproval(BaseModel):
+    """A trade idea that cleared sizing and the advisory risk review and is
+    now waiting for a person to say yes, in manual mode.
+
+    Carries the already-computed `SizedOrder` (whose `.proposal` is the
+    original `TradeProposal`, needed to re-size on the current price at
+    approval time) so the number a person sees is the number that would be
+    sent to the broker, not a re-derived one.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    cycle_id: str = ""
+    kind: Literal["entry", "close"]
+    symbol: str
+    action: Action
+    rationale: str = ""
+    evidence: list[str] = Field(default_factory=list)
+
+    #: Entry-only. None for a close.
+    sized: SizedOrder | None = None
+
+    #: Close-only. Unused for an entry.
+    close_quantity: float = 0.0
+    close_is_long: bool = True
+
+    created_at: datetime = Field(default_factory=utcnow)
+
+    def age_seconds(self, now: datetime | None = None) -> float:
+        return ((now or utcnow()) - self.created_at).total_seconds()

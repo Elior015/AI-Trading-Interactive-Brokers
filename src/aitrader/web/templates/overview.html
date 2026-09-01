@@ -1,6 +1,39 @@
 {% extends "base.html" %}
 {% block title %}Overview - AI Trader{% endblock %}
 {% block content %}
+<section class="card" id="pending-approvals-card" style="display:none">
+  <h3>Trades waiting for your OK</h3>
+  <p class="muted">The AI found these while you're in "I approve trades" mode. Nothing happens until you pick one.</p>
+  <div id="pending-approvals-list"></div>
+</section>
+<section class="card">
+  <h3>What's happening now</h3>
+  <p class="muted">AI Trader watches roughly 150 US equities, asks an LLM to propose trades every
+  5 minutes, and runs every proposal through a hard risk gate before it ever reaches the broker.
+  This panel updates live — no need to reload.</p>
+  <p id="session-line">{{ snapshot.session }}</p>
+  <div class="kv"><span>Focus symbols</span><b id="focus-list">{{ snapshot.focus|join(", ") if snapshot.focus else "none yet" }}</b></div>
+  <div id="last-decision">
+    {% if snapshot.last_decision %}
+    <p><b>Tape read:</b> {{ snapshot.last_decision.market_read or "—" }}</p>
+    {% set actionable = snapshot.last_decision.proposals|rejectattr("action", "equalto", "HOLD")|list %}
+    {% for p in actionable %}
+    <p>&bull; <b>{{ p.symbol }}</b> — {{ p.action }} — {{ p.rationale }}</p>
+    {% else %}
+    <p class="muted">No trade proposals this cycle.</p>
+    {% endfor %}
+    {% else %}
+    <p class="muted">No decision cycle has run yet.</p>
+    {% endif %}
+  </div>
+  <div id="plan-summary">
+    {% if snapshot.plan %}
+    <p><b>Today's plan ({{ snapshot.plan.bias }}, {{ snapshot.plan.risk_posture }}):</b> {{ snapshot.plan.reasoning }}</p>
+    {% else %}
+    <p class="muted">No pre-market plan yet.</p>
+    {% endif %}
+  </div>
+</section>
 <section class="grid">
   <div class="card">
     <h3>Session</h3>

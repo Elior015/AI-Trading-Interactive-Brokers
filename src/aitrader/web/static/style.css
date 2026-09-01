@@ -50,6 +50,24 @@ nav { display: flex; gap: 16px; flex: 1; }
 nav a { color: var(--muted); text-decoration: none; }
 nav a:hover { color: var(--text); }
 
+.modebox { display: flex; align-items: center; gap: 8px; }
+button.mode-btn {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+button.mode-btn.mode-active {
+  background: var(--accent);
+  color: #08111c;
+  border-color: var(--accent);
+  font-weight: 700;
+}
+button.mode-btn:hover { filter: brightness(1.15); }
+
 .killbox { display: flex; align-items: center; gap: 10px; }
 
 .dot {
@@ -106,6 +124,28 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
 .focus-row { background: rgba(76, 158, 255, 0.06); }
+
+.approval-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px dashed var(--border);
+  gap: 12px;
+}
+.approval-row:last-child { border-bottom: none; }
+.approval-actions { display: flex; gap: 8px; flex-shrink: 0; }
+button.approve-btn, button.skip-btn {
+  border: none;
+  border-radius: 4px;
+  padding: 8px 16px;
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+}
+button.approve-btn { background: var(--pos); color: #052012; }
+button.skip-btn { background: var(--neg); color: white; }
+button.approve-btn:hover, button.skip-btn:hover { filter: brightness(1.15); }
 
 .log { max-height: 70vh; overflow-y: auto; }
 .log-entry { padding: 6px 0; border-bottom: 1px solid var(--border); display: flex; gap: 10px; }

@@ -84,6 +84,13 @@ class GatewayService:
         self.health.last_connected_at = datetime.now(UTC)
         self.health.last_error = None
         self.health.reconnect_attempts = 0
+        # Unlike `_reconnect`, the caller (scheduler.start) does its own
+        # reconciliation right after this returns, so we set `ready` directly
+        # here rather than going through `_after_connect` (which would fire
+        # `on_reconnect` and reconcile a second time). Without this, a clean
+        # cold start never becomes tradeable until a spurious disconnect
+        # forces a reconnect through `_after_connect`.
+        self.ready.set()
         log.info("gateway_connected", account=self.account_id, port=self.port)
         return self.account_id
 

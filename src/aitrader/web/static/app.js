@@ -40,6 +40,13 @@
       modeBadge.className = "badge " + s.mode;
     }
 
+    const modeAutoBtn = document.getElementById("mode-auto-btn");
+    const modeManualBtn = document.getElementById("mode-manual-btn");
+    if (modeAutoBtn && modeManualBtn && s.execution_mode) {
+      modeAutoBtn.classList.toggle("mode-active", s.execution_mode === "auto");
+      modeManualBtn.classList.toggle("mode-active", s.execution_mode === "manual");
+    }
+
     const gw = s.connection || {};
     const tripped = (s.risk && s.risk.kill_switch && s.risk.kill_switch.tripped) || false;
 
@@ -87,6 +94,105 @@
     set("gw-state", gw.state || "-");
     set("gw-2fa", gw.needs_manual_2fa);
     set("gw-reconnects", gw.reconnect_attempts);
+
+    // "What's happening now" card, positions, and recent cycles — server-rendered
+    // once on page load, kept live here so the Overview page never needs a
+    // manual reload to reflect the next decision cycle.
+    if (s.session) set("session-line", s.session);
+    if (s.focus) set("focus-list", s.focus.length ? s.focus.join(", ") : "none yet");
+
+    const decisionEl = document.getElementById("last-decision");
+    if (decisionEl) {
+      if (s.last_decision) {
+        const d = s.last_decision;
+        const actionable = (d.proposals || []).filter((p) => p.action !== "HOLD");
+        let html = "<p><b>Tape read:</b> " + escapeHtml(d.market_read || "—") + "</p>";
+        html += actionable.length
+          ? actionable
+              .map(
+                (p) =>
+                  "<p>&bull; <b>" + escapeHtml(p.symbol) + "</b> — " + escapeHtml(p.action) +
+                  " — " + escapeHtml(p.rationale || "") + "</p>"
+              )
+              .join("")
+          : '<p class="muted">No trade proposals this cycle.</p>';
+        decisionEl.innerHTML = html;
+      } else {
+        decisionEl.innerHTML = '<p class="muted">No decision cycle has run yet.</p>';
+      }
+    }
+
+    const planEl = document.getElementById("plan-summary");
+    if (planEl) {
+      planEl.innerHTML = s.plan
+        ? "<p><b>Today's plan (" + escapeHtml(s.plan.bias) + ", " + escapeHtml(s.plan.risk_posture) +
+          "):</b> " + escapeHtml(s.plan.reasoning || "") + "</p>"
+        : '<p class="muted">No pre-market plan yet.</p>';
+    }
+
+    const posBody = document.querySelector("#positions-table tbody");
+    if (posBody && s.positions) {
+      posBody.innerHTML = s.positions.length
+        ? s.positions
+            .map((p) => {
+              const cls = p.unrealized_pnl >= 0 ? "pos" : "neg";
+              return (
+                "<tr><td>" + escapeHtml(p.symbol) + "</td><td>" + p.quantity + "</td><td>" +
+                p.avg_cost + "</td><td>" + p.market_price + '</td><td class="' + cls + '">' +
+                p.unrealized_pnl + "</td></tr>"
+              );
+            })
+            .join("")
+        : '<tr><td colspan="5" class="muted">No open positions</td></tr>';
+    }
+
+    const pendCard = document.getElementById("pending-approvals-card");
+    const pendList = document.getElementById("pending-approvals-list");
+    if (pendCard && pendList) {
+      const pending = s.pending_approvals || [];
+      pendCard.style.display = pending.length ? "block" : "none";
+      pendList.innerHTML = pending
+        .map((p) => {
+          const word = p.kind === "close" ? "Close" : p.action === "SELL" ? "Sell" : "Buy";
+          const amount = p.sized
+            ? p.sized.quantity + " shares at $" + Number(p.sized.entry_price).toFixed(2)
+            : p.close_quantity + " shares";
+          return (
+            '<div class="approval-row"><div><b>' + escapeHtml(word) + " " + escapeHtml(p.symbol) +
+            "</b> — " + escapeHtml(amount) + '<p class="muted">' + escapeHtml(p.rationale || "") +
+            '</p></div><div class="approval-actions">' +
+            '<button class="approve-btn" onclick="approveTrade(\'' + p.id + '\')">Approve</button>' +
+            '<button class="skip-btn" onclick="skipTrade(\'' + p.id + '\')">Skip</button>' +
+            "</div></div>"
+          );
+        })
+        .join("");
+    }
+
+    const cyclesBody = document.querySelector("#cycles-table tbody");
+    if (cyclesBody && s.cycles) {
+      cyclesBody.innerHTML = s.cycles.length
+        ? s.cycles
+            .slice()
+            .reverse()
+            .map(
+              (c) =>
+                "<tr><td>" + escapeHtml(c.cycle_id) + "</td><td>" + escapeHtml(c.started_at) +
+                "</td><td>" + (c.focus ? c.focus.length : 0) + "</td><td>" + c.proposals +
+                "</td><td>" + c.approved + "</td><td>" + c.rejected + "</td><td>" +
+                c.llm_latency_ms + "</td></tr>"
+            )
+            .join("")
+        : '<tr><td colspan="7" class="muted">No cycles yet</td></tr>';
+    }
+  }
+
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
   }
 
   function connect() {
@@ -134,6 +240,34 @@
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ confirm: true }),
+    });
+  };
+
+  window.setMode = async function (mode) {
+    // Switching to auto hands trading back to the AI unattended, so ask
+    // first. Switching to manual is the safer direction — no need to ask.
+    const needsConfirm = mode === "auto";
+    if (needsConfirm && !confirm("Let the AI trade by itself, without asking you first?")) return;
+    await fetch("/control/mode?token=" + encodeURIComponent(token), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: mode, confirm: needsConfirm }),
+    });
+  };
+
+  window.approveTrade = async function (id) {
+    await fetch("/control/approve?token=" + encodeURIComponent(token), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: id }),
+    });
+  };
+
+  window.skipTrade = async function (id) {
+    await fetch("/control/reject?token=" + encodeURIComponent(token), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: id }),
     });
   };
 })();

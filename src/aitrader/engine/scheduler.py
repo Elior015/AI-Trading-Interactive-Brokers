@@ -28,14 +28,16 @@ from ..broker.market_data import MarketDataService
 from ..broker.orders import OrderManager
 from ..config import LiveTradingNotPermitted, Settings
 from ..data.store import BarStore, StateStore
-from ..domain.enums import KillSwitchAction, SessionPhase
+from ..domain.enums import ExecutionMode, KillSwitchAction, RejectReason, SessionPhase
+from ..domain.proposals import PendingApproval, RiskVerdict
 from ..llm.audit import AuditLog
 from ..llm.gateway import LLMGateway
 from ..llm.narrative import SessionNarrative
 from ..llm.providers import build_provider
 from ..logging_setup import get_logger
-from ..risk.engine import RiskEngine
+from ..risk.engine import RiskContext, RiskEngine
 from ..risk.killswitch import KillSwitch
+from ..risk.sizing import size_proposal
 from .calendar import MarketCalendar
 from .cycle import DecisionCycle
 from .state import AppState
@@ -62,6 +64,19 @@ class TradingEngine:
         # Persistence
         self.store = StateStore(s.data_dir / "aitrader.sqlite3")
         self.bar_store = BarStore(s.duckdb_path)
+
+        # Auto/manual trading mode is a standing user preference, not tied to
+        # any one session, so it's restored here rather than left to default
+        # -- a restart must never silently change whether a person is in the
+        # loop. No saved value (fresh install) means AUTO, matching today's
+        # always-automatic behavior.
+        saved_mode = self.store.get_state("execution_mode")
+        try:
+            self.state.execution_mode = (
+                ExecutionMode(saved_mode) if saved_mode else ExecutionMode.AUTO
+            )
+        except ValueError:
+            self.state.execution_mode = ExecutionMode.AUTO
 
         # Broker
         self.broker = self.broker or IbAsyncBroker(
@@ -305,6 +320,23 @@ class TradingEngine:
             await self._flatten_all("end of day")
 
         await self._expire_stale_orders()
+        await self._expire_stale_approvals()
+
+    async def _expire_stale_approvals(self) -> None:
+        """Drop manual-mode trade ideas nobody answered in time.
+
+        Keeps the "waiting for your OK" list honest -- an idea approved 20
+        minutes late is being approved against a market that's moved on.
+        """
+        timeout = self.settings.strategy.cadence.approval_timeout_seconds
+        now = datetime.now(UTC)
+        stale = [p for p in self.state.pending_approvals if p.age_seconds(now) > timeout]
+        for approval in stale:
+            self.state.pending_approvals.remove(approval)
+            self.narrative.append("expired", f"{approval.symbol} approval expired, unanswered")
+            log.info(
+                "approval_expired", symbol=approval.symbol, age=round(approval.age_seconds(now))
+            )
 
     async def _expire_stale_orders(self) -> None:
         """Cancel entry limits that never filled.
@@ -519,6 +551,118 @@ class TradingEngine:
         self.kill_switch.trip(reason, action)
         if self.kill_switch.should_flatten:
             await self._flatten_all(f"kill switch: {reason}")
+
+    # ------------------------------------------------------------------ #
+    # manual-mode approvals
+    # ------------------------------------------------------------------ #
+
+    def set_execution_mode(self, mode: ExecutionMode) -> None:
+        """Switch between the AI trading itself and a person approving each trade.
+
+        Persisted immediately so a restart never silently changes who's in
+        the loop.
+        """
+        self.state.execution_mode = mode
+        self.store.set_state("execution_mode", mode.value)
+        log.warning("execution_mode_changed", mode=mode.value)
+
+    async def approve_proposal(self, approval_id: str) -> RiskVerdict | None:
+        """A person said yes to a waiting trade idea.
+
+        Re-checks current conditions rather than replaying the numbers from
+        when the idea first came up -- time passed while it waited for a
+        click, and a stale limit price must never go straight to the broker.
+        Fires through the exact same two calls auto mode uses
+        (`risk.submit` / `orders.close_position`), so this opens no new path
+        to the broker.
+        """
+        approval = next((p for p in self.state.pending_approvals if p.id == approval_id), None)
+        if approval is None:
+            return None
+        self.state.pending_approvals.remove(approval)
+        session = self.calendar.info()
+
+        if approval.kind == "close":
+            quote = self.market_data.quotes([approval.symbol]).get(approval.symbol)
+            verdict = self.risk.evaluate_close(
+                approval.symbol, quote, session.phase, self.orders.working_symbols
+            )
+            if verdict.approved:
+                await self.orders.close_position(
+                    approval.symbol,
+                    approval.close_quantity,
+                    approval.close_is_long,
+                    reason="approved by user",
+                )
+                self.state.note_close(approval.symbol)
+                self.narrative.record_exit(approval.symbol, "approved by user")
+            else:
+                reason = verdict.reason.value if verdict.reason else "UNKNOWN"
+                self.narrative.record_rejection(approval.symbol, reason, verdict.detail)
+            return verdict
+
+        features = self.state.features.get(approval.symbol)
+        account = self.state.account
+        if features is None or account is None or approval.sized is None:
+            return RiskVerdict.reject(
+                RejectReason.NO_MARKET_DATA, "no current data to re-price this trade", approval.symbol
+            )
+
+        quote = self.market_data.quotes([approval.symbol]).get(approval.symbol)
+        fresh_sized = size_proposal(
+            proposal=approval.sized.proposal,
+            features=features,
+            account=account,
+            quote=quote,
+            cfg=self.settings.strategy.risk,
+            limit_offset_pct=self.settings.strategy.broker.limit_offset_pct,
+        )
+        if fresh_sized is None:
+            return RiskVerdict.reject(
+                RejectReason.ZERO_QUANTITY, "no longer sizeable at the current price", approval.symbol
+            )
+
+        ctx = RiskContext(
+            account=account,
+            quote=quote,
+            phase=session.phase,
+            minutes_to_close=session.minutes_to_close,
+            is_live=self.settings.is_live,
+            starting_equity=self.state.starting_equity,
+            entries_this_cycle=self.state.entries_this_cycle,
+            trades_today=self.state.trades_today,
+            working_symbols=self.orders.working_symbols,
+            last_entry=self.state.last_entry,
+            last_close=self.state.last_close,
+            # A fresh human decision made right now, not the original LLM
+            # read from when the idea was first proposed.
+            decision_age_seconds=0.0,
+            risk_officer_approved=True,  # already vetted once when the idea was proposed
+            avg_volume=features.avg_volume,
+        )
+        verdict = await self.risk.submit(fresh_sized, ctx, cycle_id=approval.cycle_id)
+        if verdict.approved:
+            self.state.note_entry(approval.symbol)
+            self.narrative.append(
+                "placed",
+                f"{fresh_sized.action.value} {fresh_sized.quantity} {fresh_sized.symbol} "
+                f"at {fresh_sized.entry_price:.2f} — approved by user",
+            )
+        else:
+            reason = verdict.reason.value if verdict.reason else "UNKNOWN"
+            self.narrative.record_rejection(approval.symbol, reason, verdict.detail)
+        return verdict
+
+    def reject_proposal(self, approval_id: str, reason: str = "") -> bool:
+        """A person said no (or 'skip') to a waiting trade idea."""
+        approval = next((p for p in self.state.pending_approvals if p.id == approval_id), None)
+        if approval is None:
+            return False
+        self.state.pending_approvals.remove(approval)
+        self.narrative.append(
+            "skipped", f"{approval.symbol} skipped by user" + (f": {reason}" if reason else "")
+        )
+        return True
 
     def snapshot(self) -> dict[str, Any]:
         return self.state.snapshot()

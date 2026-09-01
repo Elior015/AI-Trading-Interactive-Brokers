@@ -13,9 +13,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from ..domain.enums import SessionPhase
+from ..domain.enums import ExecutionMode, SessionPhase
 from ..domain.models import AccountSnapshot, FeaturePack
-from ..domain.proposals import CycleDecision, DailyPlan
+from ..domain.proposals import CycleDecision, DailyPlan, PendingApproval
 
 
 @dataclass
@@ -30,6 +30,7 @@ class CycleRecord:
     approved: int = 0
     rejected: int = 0
     rejections: list[dict[str, str]] = field(default_factory=list)
+    pending: int = 0
     llm_latency_ms: int = 0
     duration_ms: int = 0
     error: str = ""
@@ -43,6 +44,7 @@ class CycleRecord:
             "proposals": self.proposals,
             "approved": self.approved,
             "rejected": self.rejected,
+            "pending": self.pending,
             "rejections": self.rejections,
             "llm_latency_ms": self.llm_latency_ms,
             "duration_ms": self.duration_ms,
@@ -69,6 +71,12 @@ class AppState:
     plan: DailyPlan | None = None
     last_decision: CycleDecision | None = None
     cycles: list[CycleRecord] = field(default_factory=list)
+
+    #: Who pulls the trigger — the AI (auto) or a person via the dashboard
+    #: (manual). Persisted across restarts by TradingEngine, not this class.
+    execution_mode: ExecutionMode = ExecutionMode.AUTO
+    #: Manual-mode trade ideas waiting for a person to approve or skip.
+    pending_approvals: list[PendingApproval] = field(default_factory=list)
 
     trades_today: int = 0
     entries_this_cycle: int = 0
@@ -114,6 +122,9 @@ class AppState:
         self.premarket_done = False
         self.eod_done = False
         self.halted_reason = ""
+        # Yesterday's un-answered trade ideas are meaningless today. Note:
+        # execution_mode itself is a standing preference and is NOT reset here.
+        self.pending_approvals.clear()
 
     # ------------------------------------------------------------------ #
 
@@ -199,6 +210,8 @@ class AppState:
                 self.last_decision.model_dump(mode="json") if self.last_decision else None
             ),
             "cycles": [c.as_dict() for c in self.cycles[-12:]],
+            "execution_mode": self.execution_mode.value,
+            "pending_approvals": [p.model_dump(mode="json") for p in self.pending_approvals],
             "connection": self.connection,
             "llm": self.llm,
             "market_data": self.market_data,
